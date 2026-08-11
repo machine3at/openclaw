@@ -1,4 +1,9 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import type { DeviceAuthTokenRecord } from "../../packages/gateway-client/src/client.js";
+import {
+  GATEWAY_CLIENT_MODES,
+  GATEWAY_CLIENT_NAMES,
+} from "../../packages/gateway-protocol/src/client-info.js";
 import { ConnectErrorDetailCodes } from "../../packages/gateway-protocol/src/connect-error-details.js";
 import { startMinimalRealGateway } from "../gateway/minimal-gateway.test-helpers.js";
 import type { TuiSessionList } from "../tui/tui-backend.js";
@@ -217,5 +222,43 @@ describe("real Gateway session boundary", () => {
         }),
       }),
     );
+  });
+
+  it("retires the one-use bootstrap credential before a real-wire reconnect", async () => {
+    const { GatewayClient } =
+      await vi.importActual<typeof import("../gateway/client.js")>("../gateway/client.js");
+    let storedDeviceAuth: DeviceAuthTokenRecord | null = null;
+    let helloCount = 0;
+    const client = new GatewayClient({
+      url: harness.url,
+      bootstrapToken: await harness.issueNodeBootstrapToken(),
+      preferBootstrapToken: true,
+      role: "node",
+      scopes: [],
+      clientName: GATEWAY_CLIENT_NAMES.NODE_HOST,
+      clientVersion: "test",
+      platform: "test",
+      mode: GATEWAY_CLIENT_MODES.NODE,
+      deviceIdentity: harness.createDeviceIdentity("reconnect"),
+      hostDeps: {
+        loadDeviceAuthToken: () => storedDeviceAuth,
+        storeDeviceAuthToken: ({ token, scopes }) => {
+          storedDeviceAuth = { token, scopes };
+        },
+      },
+      onHelloOk: () => {
+        helloCount += 1;
+      },
+    });
+    client.start();
+    try {
+      await vi.waitFor(() => expect(helloCount).toBe(1), { timeout: 5_000 });
+      expect(storedDeviceAuth?.token).toBeTruthy();
+
+      await harness.restart();
+      await vi.waitFor(() => expect(helloCount).toBe(2), { timeout: 5_000 });
+    } finally {
+      await client.stopAndWait();
+    }
   });
 });
