@@ -20,7 +20,7 @@ env:
   NODE_VERSION: "24.22.1"
   # Pinned prospective candidate under test; the proof branch head is this
   # commit plus the workflow commit only.
-  CANDIDATE_SHA: "648447d78ac5a283acdf5dbb1d2b488f7a073217"
+  CANDIDATE_SHA: "1b77cbfa59b12ff5d5c4d39bb208b1b7c3a74583"
   PROOF_BRANCH: "proof/207157-macos-native-648447d78ac"
 
 jobs:
