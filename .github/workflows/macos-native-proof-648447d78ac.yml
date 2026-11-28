@@ -1,0 +1,156 @@
+name: macOS native focused proof 648447d78ac
+
+# Proof-only workflow. It exists solely on the throwaway proof branch below, so
+# a push to any other branch never starts it. No workflow_dispatch, no secrets,
+# no inputs, and no repository write permission.
+on:
+  push:
+    branches:
+      - "proof/207157-macos-native-648447d78ac"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: macos-native-proof-648447d78ac
+  cancel-in-progress: false
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+  NODE_VERSION: "24.22.1"
+  # Pinned prospective candidate under test; the proof branch head is this
+  # commit plus the workflow commit only.
+  CANDIDATE_SHA: "648447d78ac5a283acdf5dbb1d2b488f7a073217"
+  PROOF_BRANCH: "proof/207157-macos-native-648447d78ac"
+
+jobs:
+  native:
+    name: macos-swift focused proof
+    # Standard public GitHub-hosted macOS image label; the same label upstream
+    # CI (ci.yml hosted_xcode_runner, apple-node-native.yml) uses. Not a larger
+    # paid runner.
+    runs-on: xcode-27
+    timeout-minutes: 70
+    steps:
+      - name: Checkout proof branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 2
+          fetch-tags: false
+          persist-credentials: false
+          submodules: false
+
+      - name: Check out and verify the pinned candidate commit
+        run: |
+          set -euo pipefail
+          proof_head="$(git rev-parse HEAD)"
+          echo "proof branch head: $proof_head"
+          echo "pinned candidate:  $CANDIDATE_SHA"
+          git cat-file -e "${CANDIDATE_SHA}^{commit}"
+          git merge-base --is-ancestor "$CANDIDATE_SHA" "$proof_head"
+          git checkout --force "$CANDIDATE_SHA"
+          checked_out="$(git rev-parse HEAD)"
+          if [ "$checked_out" != "$CANDIDATE_SHA" ]; then
+            echo "::error::checked out $checked_out, expected $CANDIDATE_SHA"
+            exit 1
+          fi
+          git log -1 --format='candidate verified: %H %s'
+          echo "CANDIDATE_VERIFIED=$checked_out" >> "$GITHUB_ENV"
+
+      - name: Select Xcode
+        id: select-xcode
+        run: |
+          set -euo pipefail
+          source scripts/lib/swift-toolchain.sh
+          select_xcode_toolchain
+
+      - name: Setup Node environment
+        id: node-env
+        uses: ./.github/actions/setup-node-env
+        with:
+          node-version: "24.22.1"
+          cache-mode: "off"
+          install-bun: "false"
+          install-deps: "false"
+
+      # Mirrors the native asset install in ci.yml (macos-swift, phase "tests")
+      # and apple-node-native.yml.
+      - name: Install native asset dependencies
+        env:
+          CI: "true"
+        run: |
+          set -euo pipefail
+          pnpm install --frozen-lockfile --prefer-offline --optional \
+            --filter '@openclaw/mermaid-renderer...' \
+            --filter '@openclaw/gateway-protocol...' \
+            --filter 'openclaw...' \
+            --config.ignore-scripts=false \
+            --config.engine-strict=false \
+            --config.enable-pre-post-scripts=true \
+            --config.side-effects-cache=true
+
+      - name: Prepare Apple Mermaid assets
+        run: |
+          set -euo pipefail
+          node scripts/prepare-apple-mermaid.mjs
+
+      - name: Confirm runner and toolchain
+        run: |
+          set -euo pipefail
+          sw_vers
+          xcodebuild -version
+          swift --version
+          node --version
+          pnpm --version
+
+      # Product compile proof: the app target builds at the pinned candidate.
+      - name: Swift build (product compile)
+        run: |
+          set -euo pipefail
+          swift build --package-path apps/macos --product OpenClaw --configuration debug \
+            --build-system native --disable-index-store -Xswiftc -gline-tables-only
+
+      - name: Build Swift tests
+        run: |
+          set -euo pipefail
+          swift build --package-path apps/macos --build-system native --enable-code-coverage \
+            --disable-index-store -Xswiftc -gline-tables-only --build-tests
+
+      # Focused native suite that owns the macOS dashboard window-drag bridge
+      # wiring; same flags as ci.yml macos-swift, narrowed with --filter.
+      - name: Focused native test (DashboardWindowSmokeTests)
+        run: |
+          set -euo pipefail
+          log_dir="$RUNNER_TEMP/openclaw-native-test-logs"
+          mkdir -p "$log_dir"
+          log="$log_dir/focused-dashboard-window-smoke.log"
+          echo "FOCUSED_TEST_LOG=$log" >> "$GITHUB_ENV"
+          swift test --package-path apps/macos --build-system native --enable-code-coverage \
+            --disable-index-store -Xswiftc -gline-tables-only --skip-build --no-parallel \
+            --filter "DashboardWindowSmokeTests" 2>&1 | tee "$log"
+
+      - name: Verify the focused run actually exercised the candidate test
+        run: |
+          set -euo pipefail
+          log="${FOCUSED_TEST_LOG:?focused test log path missing}"
+          expected_test='dashboard host serves window drag requests from its hosted window'
+          # A mistyped filter exits 0 with an empty run, so require the exact
+          # suite and the new case to appear in the candidate's test log.
+          grep -Fq 'DashboardWindowSmokeTests' "$log"
+          grep -Fq "$expected_test" "$log"
+          grep -Eq 'Test run with [1-9][0-9]* test' "$log"
+          if grep -Fq '✘' "$log"; then
+            echo "::error::focused native suite reported a failing case"
+            exit 1
+          fi
+          echo "focused native suite verified at ${CANDIDATE_VERIFIED}"
+          grep -E 'Test run with [0-9]+ test' "$log" | tail -1
+
+      - name: Test log tail
+        if: ${{ always() }}
+        run: |
+          if [ -n "${FOCUSED_TEST_LOG:-}" ] && [ -f "$FOCUSED_TEST_LOG" ]; then
+            tail -n 40 "$FOCUSED_TEST_LOG"
+          else
+            echo "no focused test log produced"
+          fi
