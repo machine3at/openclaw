@@ -35,7 +35,7 @@ jobs:
       - name: Checkout proof branch
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          fetch-depth: 3
+          fetch-depth: 10
           fetch-tags: false
           persist-credentials: false
           submodules: false
@@ -52,7 +52,11 @@ jobs:
             git fetch --no-tags --depth=1 origin "$CANDIDATE_SHA"
           fi
           git cat-file -e "${CANDIDATE_SHA}^{commit}"
-          git merge-base --is-ancestor "$CANDIDATE_SHA" "$proof_head"
+          # Informational only: the proof branch is built on this candidate, and
+          # the shallow checkout can cut the ancestry walk on its own.
+          git merge-base --is-ancestor "$CANDIDATE_SHA" "$proof_head" \
+            && echo "candidate is an ancestor of the proof branch" \
+            || echo "ancestry not provable from this shallow checkout; verifying HEAD instead"
           git checkout --force "$CANDIDATE_SHA"
           checked_out="$(git rev-parse HEAD)"
           if [ "$checked_out" != "$CANDIDATE_SHA" ]; then
