@@ -103,6 +103,35 @@ jobs:
           node --version
           pnpm --version
 
+      # Diagnostic only: records the hosted runner's screen geometry and the
+      # exact AppKit frame clamp the drag policy applies, so a geometry-bound
+      # assertion can be told apart from a product defect.
+      - name: Report screen geometry and window clamp
+        run: |
+          set -euo pipefail
+          cat > "$RUNNER_TEMP/screen-geometry.swift" <<'SWIFT'
+          import AppKit
+
+          for (index, screen) in NSScreen.screens.enumerated() {
+              print("screen[\(index)] frame=\(screen.frame) visibleFrame=\(screen.visibleFrame) scale=\(screen.backingScaleFactor)")
+          }
+          let probe = NSWindow(
+              contentRect: NSRect(x: 240, y: 240, width: 720, height: 480),
+              styleMask: [.titled, .closable, .miniaturizable, .resizable],
+              backing: .buffered,
+              defer: false)
+          print("probe frame=\(probe.frame)")
+          if let screen = probe.screen ?? NSScreen.main {
+              let requested = NSRect(
+                  origin: NSPoint(x: probe.frame.origin.x + 30, y: probe.frame.origin.y + 20),
+                  size: probe.frame.size)
+              let clamped = probe.constrainFrameRect(requested, to: screen)
+              print("requested=\(requested.origin) clamped=\(clamped.origin)")
+          }
+          probe.close()
+          SWIFT
+          swift "$RUNNER_TEMP/screen-geometry.swift"
+
       # Product compile proof: the app target builds at the pinned candidate.
       - name: Swift build (product compile)
         run: |
